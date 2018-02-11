@@ -1,0 +1,117 @@
+#!/usr/bin/env perl
+
+# Inspired by https://github.com/jeromebelleman/reactivity vim part
+#
+# Resources used:
+#   number of rows to show with vim_last, default 1024:
+#     urxvt.buffer2vim.lastrows: POSITIVE INT
+#   If you want to use temp files or a pipe to feed vim, default 'file':
+#     urxvt.buffer2vim.tmpfiletype: 'file' | 'pipe'
+#
+# Functions:
+#   show last rows:
+#     perl:buffer2vim:vim_last
+#   show all buffer:
+#     perl:buffer2vim:vim
+
+sub print_lines {
+    my ($term, $fh, $max_rows) = @_;
+    my $empty_lines = 0;
+
+    my $row = $term->top_row;
+    if ($max_rows) {
+        my $postrow = $term->nrow - $max_rows;
+        if ($row < $postrow) {
+            $row = $postrow;
+        }
+    }
+
+    while ($row < $term->nrow) {
+        my $line = $term->line($row);
+        if ($line->l) {
+            for (; $empty_lines; --$empty_lines) {
+                print $fh "\n";
+            }
+            print $fh eval "\$line->t =~ tr/$urxvt::NOCHAR//dr"; # It's yet faster without this cleanup
+            print $fh "\n";
+        } else {
+            $empty_lines++;
+        }
+        $row = $line->end+1;
+    }
+}
+
+sub exec_vim {
+    my ($term, $filepath, $cwd, $vim_delete_file) = @_;
+    $term->exec_async(
+        'urxvt',
+        '-cd',
+        $cwd,
+        '-e',
+        'vim',
+        ($vim_delete_file) ? "+call delete(expand('%'))" : '+normal gg', # gg is noop
+        '+set buftype=nofile',
+        '+set noreadonly',
+        '+file [urxvt]',
+        '+normal G$',
+        $filepath
+    );
+}
+
+sub on_start {
+    my ($term) = @_;
+    $term->{last_rows} = $term->x_resource('%.lastrows') || 1024;
+    $term->{tmp_file_type} = $term->x_resource('%.tmpfiletype') || 'file';
+    ()
+}
+sub on_child_start {
+    my ($term, $pid) = @_;
+    $term->{shell_pid} = $pid;
+    ()
+}
+sub on_user_command {
+    my ($term, $cmd) = @_;
+
+    my $max_rows;
+    if ($cmd eq 'buffer2vim:vim_last') {
+        $max_rows = $term->{last_rows};
+    } elsif ($cmd eq 'buffer2vim:vim') {
+        $max_rows = 0;
+    } else {
+        return ();
+    }
+
+    if ($term->{tmp_file_type} eq 'pipe') {
+
+        my $pipe_path = "/tmp/buffer2vim-urxvt-$term->{shell_pid}.pipe";
+        if (POSIX::mkfifo($pipe_path, 0600)) {
+            if (exec_vim($term, $pipe_path,  "/proc/$term->{shell_pid}/cwd", 0)) {
+                if (open($fh, ">:utf8", $pipe_path)) {
+                    print_lines($term, $fh, $max_rows);
+                    close $fh;
+                } else {
+                    urxvt::warn "buffer2vim: Cannot write to $pipe_path\n";
+                }
+            } else {
+                urxvt::warn "buffer2vim: Cannot launch vim to read from $pipe_path\n";
+            }
+            unlink $pipe_path;
+        } else {
+            urxvt::warn "buffer2vim: Cannot create pipe $pipe_path\n";
+        }
+
+    } elsif ($term->{tmp_file_type} eq 'file') {
+
+        use File::Temp qw/ tempfile /;
+        my ($fh, $filename) = tempfile("buffer2vim-urxvt-$term->{shell_pid}-XXXXXX", DIR => '/tmp');
+        binmode($fh, ":utf8");
+        print_lines($term, $fh, $max_rows);
+        close $fh;
+        exec_vim($term, $filename, "/proc/$term->{shell_pid}/cwd", 1);
+
+    } else {
+        urxvt::warn "buffer2vim: Tmp file type unrecognized: $term->{tmp_file_type}\n";
+    }
+    return 1;
+}
+
