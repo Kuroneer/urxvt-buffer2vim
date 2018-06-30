@@ -54,6 +54,7 @@ sub exec_vim {
         '+set noreadonly',
         '+file [urxvt]',
         '+normal G$',
+        '+redraw',
         $filepath
     );
 }
