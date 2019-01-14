@@ -42,27 +42,45 @@ sub print_lines {
 }
 
 sub exec_vim {
-    my ($term, $filepath, $cwd, $vim_delete_file) = @_;
-    $term->exec_async(
-        'urxvt',
-        '-cd',
-        $cwd,
-        '-e',
+    my ($term, $filepath, $cwd, $vim_delete_file, $pre_cmd) = @_;
+    my @vim_cmd = (
         'vim',
-        ($vim_delete_file) ? "+call delete(expand('%'))" : '+normal gg', # gg is noop
-        '+set buftype=nofile',
-        '+set noreadonly',
-        '+file [urxvt]',
-        '+normal G$',
+        ($vim_delete_file) ? "+\"call delete(expand('%'))\"" : '+"normal gg"', # gg is noop
+        '+"set buftype=nofile"',
+        '+"set noreadonly"',
+        '+"file [urxvt]"',
+        '+"normal G$"',
         '+redraw',
         $filepath
     );
+
+    if ($pre_cmd) {
+        my $shell = $ENV{'SHELL'} || 'sh';
+        $term->exec_async(
+            'urxvt',
+            '-cd',
+            $cwd,
+            '-e',
+            $shell,
+            '-c',
+            $pre_cmd.join(' ', @vim_cmd)
+        );
+    } else {
+        $term->exec_async(
+            'urxvt',
+            '-cd',
+            $cwd,
+            '-e',
+            @vim_cmd
+        );
+    }
 }
 
 sub on_start {
     my ($term) = @_;
     $term->{last_rows} = $term->x_resource('%.lastrows') || 1024;
     $term->{tmp_file_type} = $term->x_resource('%.tmpfiletype') || 'file';
+    $term->{pre_cmd} = $term->x_resource('%.pre_cmd');
     ()
 }
 sub on_child_start {
@@ -86,7 +104,7 @@ sub on_user_command {
 
         my $pipe_path = "/tmp/buffer2vim-urxvt-$term->{shell_pid}.pipe";
         if (POSIX::mkfifo($pipe_path, 0600)) {
-            if (exec_vim($term, $pipe_path,  "/proc/$term->{shell_pid}/cwd", 0)) {
+            if (exec_vim($term, $pipe_path,  "/proc/$term->{shell_pid}/cwd", 0, $term->{pre_cmd})) {
                 if (open($fh, ">:utf8", $pipe_path)) {
                     print_lines($term, $fh, $max_rows);
                     close $fh;
@@ -108,7 +126,7 @@ sub on_user_command {
         binmode($fh, ":utf8");
         print_lines($term, $fh, $max_rows);
         close $fh;
-        exec_vim($term, $filename, "/proc/$term->{shell_pid}/cwd", 1);
+        exec_vim($term, $filename, "/proc/$term->{shell_pid}/cwd", 1, $term->{pre_cmd});
 
     } else {
         urxvt::warn "buffer2vim: Tmp file type unrecognized: $term->{tmp_file_type}\n";
